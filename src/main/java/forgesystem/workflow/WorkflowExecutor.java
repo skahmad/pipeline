@@ -1,53 +1,82 @@
 package forgesystem.workflow;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.stream.Collectors;
+import java.util.concurrent.*;
 
-public class WorkflowExecutor {
+/**
+ * Execute workflow
+ * created by : ahmad hossain
+ * created at : 27-10-2024 03:35 AM
+ */
+public final class WorkflowExecutor {
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+//    private final ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 
     private final boolean isAsync;
+    List<TaskResult<?>> results = new ArrayList<>();
+    private List<Future<?>> futureTasks = new ArrayList<>();
 
     public WorkflowExecutor(boolean isAsync) {
         this.isAsync = isAsync;
     }
 
-    public List<Object> execute(Workflow workflow, TaskContext context) {
-        List<Task<?>> tasks = workflow.getTasks();
-        if (isAsync) {
-            return executeAsync(tasks, context);
-        } else {
-            return executeSync(tasks, context);
+    private void asyncExecute(Workflow workflow, TaskContext context) {
+        for (Task<?> task : workflow.getTasks()) {
+            task.setContext(context);
+            task.addBeforeHook(workflow.beforeEach);
+            task.addAfterHook(workflow.afterEach);
+            Future<?> future = executorService.submit(task);
+            futureTasks.add(future);
+        }
+    }
+    private void syncExecute(Workflow workflow, TaskContext context) {
+        for (Task<?> task : workflow.getTasks()) {
+            task.setContext(context);
+            task.addBeforeHook(workflow.beforeEach);
+            task.addAfterHook(workflow.afterEach);
+            TaskResult<?> taskResult = task.call();
+            results.add(taskResult);
         }
     }
 
-    private List<Object> executeSync(List<Task<?>> tasks, TaskContext context) {
-        return tasks.stream().map(task -> {
-            try {
-                return task.executeSync(context);
-            } catch (Exception e) {
-                handleException(task, e);
-                return null; // Or handle errors differently
-            }
-        }).collect(Collectors.toList());
+
+    public void execute(Workflow workflow, TaskContext context) {
+        if (isAsync) {
+            asyncExecute(workflow, context);
+        } else {
+            syncExecute(workflow, context);
+        }
     }
 
-    private List<Object> executeAsync(List<Task<?>> tasks, TaskContext context) {
-        List<CompletableFuture<?>> futures = tasks.stream()
-                .map(task -> task.executeAsync(context)
-                        .exceptionally(e -> {
-                            handleException(task, e);
-                            return null; // Or handle errors differently
-                        }))
-                .collect(Collectors.toList());
-
-        // Wait for all tasks to complete and collect results
-        return futures.stream().map(CompletableFuture::join).collect(Collectors.toList());
+    public boolean areTasksFinished() {
+        return futureTasks != null && futureTasks.stream().allMatch(Future::isDone);
     }
 
-    private void handleException(Task<?> task, Throwable e) {
-        // Replace with a logging framework if needed
-        System.err.println("Error executing task " + task.getClass().getSimpleName() + ": " + e.getMessage());
-        // Optionally: log to a file or monitoring system, or rethrow exception
+    public List<TaskResult<?>> getResults() {
+        if (isAsync) {
+            results.clear();
+            futureTasks.forEach(f-> {
+                if(f.isDone()) {
+                    try {
+                        results.add((TaskResult<?>) f.get());
+                    } catch (InterruptedException | ExecutionException e) {
+                        System.out.println("Error");
+                    }
+                }
+            });
+        }
+        return results;
+    }
+
+    public void waitForFinish() {
+        if (!futureTasks.isEmpty())
+            futureTasks.forEach(future -> {
+                try {
+                    future.get();
+                } catch (ExecutionException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            });
     }
 }
